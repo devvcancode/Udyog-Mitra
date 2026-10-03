@@ -1,0 +1,417 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                String              @id @default(cuid())
+  name              String
+  email             String              @unique
+  mobile            String?             @unique
+  passwordHash      String
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  roles             Role[]
+  departmentId      String?
+  department        Department?         @relation(fields: [departmentId], references: [id])
+  businessProfile   BusinessProfile?
+  assignedSubApps   SubApplication[]    @relation("AssignedOfficer")
+  statusHistory     ApplicationStatusHistory[]
+  queriesRaised     Query[]             @relation("QueryOfficer")
+  documents         Document[]
+  inspections       Inspection[]        @relation("InspectionOfficer")
+  notifications     Notification[]
+  grievances        Grievance[]
+  chatSessions      ChatSession[]
+  auditLogs         AuditLog[]
+}
+
+model Role {
+  id    String @id @default(cuid())
+  name  String @unique
+  users User[]
+}
+
+model BusinessProfile {
+  id                 String @id @default(cuid())
+  userId             String @unique
+  user               User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  legalName          String
+  pan                String?
+  gstin              String?
+  activity           String
+  investmentLakhs    Float  @default(0)
+  employeeCount      Int    @default(0)
+  sectorId           String?
+  sector             Sector? @relation(fields: [sectorId], references: [id])
+  locationId         String?
+  location           Location? @relation(fields: [locationId], references: [id])
+  promoters          Promoter[]
+  applications       Application[]
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model Promoter {
+  id                String @id @default(cuid())
+  businessProfileId String
+  businessProfile   BusinessProfile @relation(fields: [businessProfileId], references: [id], onDelete: Cascade)
+  name              String
+  role              String
+  category          String?
+}
+
+model Location {
+  id               String @id @default(cuid())
+  district         String
+  taluka           String?
+  industrialArea   String?
+  areaType         String
+  businessProfiles BusinessProfile[]
+}
+
+model Sector {
+  id               String @id @default(cuid())
+  nicCode          String @unique
+  nameEn           String
+  nameMr           String
+  nameHi           String
+  pollutionCategory String @default("Green")
+  businessProfiles BusinessProfile[]
+}
+
+model Department {
+  id            String @id @default(cuid())
+  code          String @unique
+  nameEn        String
+  nameMr        String
+  nameHi        String
+  users         User[]
+  approvals     Approval[]
+  subApplications SubApplication[]
+  inspections  Inspection[]
+  grievances   Grievance[]
+}
+
+model Approval {
+  id                String @id
+  nameEn            String
+  nameMr            String
+  nameHi            String
+  descriptionEn     String
+  descriptionMr     String
+  descriptionHi     String
+  stage             String
+  slaDays           Int
+  fee               Float @default(0)
+  riskCategory      String @default("Low")
+  renewalMonths     Int?
+  deemedEligible    Boolean @default(false)
+  illustrative      Boolean @default(true)
+  departmentId      String
+  department        Department @relation(fields: [departmentId], references: [id])
+  rules             ApprovalRule[]
+  dependenciesFrom  ApprovalDependency[] @relation("DependencyFrom")
+  dependenciesTo    ApprovalDependency[] @relation("DependencyTo")
+  subApplications   SubApplication[]
+}
+
+model ApprovalRule {
+  id          String @id @default(cuid())
+  approvalId  String
+  approval    Approval @relation(fields: [approvalId], references: [id], onDelete: Cascade)
+  conditions  Json
+  description String
+}
+
+model ApprovalDependency {
+  id              String @id @default(cuid())
+  approvalId      String
+  dependsOnId     String
+  approval        Approval @relation("DependencyFrom", fields: [approvalId], references: [id], onDelete: Cascade)
+  dependsOn       Approval @relation("DependencyTo", fields: [dependsOnId], references: [id], onDelete: Cascade)
+  @@unique([approvalId, dependsOnId])
+}
+
+model Application {
+  id                String @id
+  businessProfileId String
+  businessProfile   BusinessProfile @relation(fields: [businessProfileId], references: [id])
+  status            String @default("Draft")
+  projectName       String
+  projectStage      String
+  createdAt         DateTime @default(now())
+  submittedAt       DateTime?
+  subApplications   SubApplication[]
+  statusHistory     ApplicationStatusHistory[]
+  queries           Query[]
+  documents         Document[]
+  inspections       Inspection[]
+  certificates      Certificate[]
+  renewals          Renewal[]
+  grievances        Grievance[]
+}
+
+model SubApplication {
+  id             String @id @default(cuid())
+  applicationId  String
+  application    Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  approvalId     String
+  approval       Approval @relation(fields: [approvalId], references: [id])
+  departmentId   String
+  department     Department @relation(fields: [departmentId], references: [id])
+  officerId      String?
+  officer        User? @relation("AssignedOfficer", fields: [officerId], references: [id])
+  status         String @default("Submitted")
+  dueAt          DateTime?
+  createdAt      DateTime @default(now())
+  histories      ApplicationStatusHistory[]
+  queries        Query[]
+  slaClock       SLAClock?
+  @@unique([applicationId, approvalId])
+}
+
+model ApplicationStatusHistory {
+  id               String @id @default(cuid())
+  applicationId    String
+  application      Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  subApplicationId String?
+  subApplication   SubApplication? @relation(fields: [subApplicationId], references: [id])
+  actorId          String?
+  actor            User? @relation(fields: [actorId], references: [id])
+  status           String
+  note             String?
+  createdAt        DateTime @default(now())
+}
+
+model Query {
+  id               String @id @default(cuid())
+  applicationId    String
+  application      Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  subApplicationId String?
+  subApplication   SubApplication? @relation(fields: [subApplicationId], references: [id])
+  officerId        String?
+  officer          User? @relation("QueryOfficer", fields: [officerId], references: [id])
+  title            String
+  deficiencies     Json
+  status           String @default("Open")
+  createdAt        DateTime @default(now())
+  responses        QueryResponse[]
+}
+
+model QueryResponse {
+  id        String @id @default(cuid())
+  queryId   String
+  query     Query @relation(fields: [queryId], references: [id], onDelete: Cascade)
+  message   String
+  createdAt DateTime @default(now())
+}
+
+model Document {
+  id             String @id @default(cuid())
+  applicationId  String?
+  application    Application? @relation(fields: [applicationId], references: [id])
+  ownerId        String
+  owner          User @relation(fields: [ownerId], references: [id])
+  type           String
+  fileName       String
+  status         String @default("Pending verification")
+  expiresAt      DateTime?
+  versions       DocumentVersion[]
+  verificationRecords VerificationRecord[]
+  createdAt      DateTime @default(now())
+}
+
+model DocumentVersion {
+  id         String @id @default(cuid())
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  version    Int
+  fileName   String
+  createdAt  DateTime @default(now())
+  @@unique([documentId, version])
+}
+
+model VerificationRecord {
+  id         String @id @default(cuid())
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  provider   String
+  status     String
+  reference  String?
+  verifiedAt DateTime @default(now())
+}
+
+model Inspection {
+  id           String @id @default(cuid())
+  applicationId String
+  application  Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  departmentId String
+  department   Department @relation(fields: [departmentId], references: [id])
+  officerId    String?
+  officer      User? @relation("InspectionOfficer", fields: [officerId], references: [id])
+  scheduledAt  DateTime?
+  status       String @default("Proposed")
+  checklist    InspectionChecklist[]
+  report       InspectionReport?
+}
+
+model InspectionChecklist {
+  id           String @id @default(cuid())
+  inspectionId String
+  inspection   Inspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
+  label        String
+  completed    Boolean @default(false)
+  note         String?
+}
+
+model InspectionReport {
+  id           String @id @default(cuid())
+  inspectionId String @unique
+  inspection   Inspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
+  outcome      String
+  remarks      String
+  createdAt    DateTime @default(now())
+}
+
+model Certificate {
+  id            String @id
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id])
+  approvalName  String
+  issuedAt      DateTime @default(now())
+  expiresAt     DateTime?
+}
+
+model Renewal {
+  id            String @id @default(cuid())
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id])
+  certificateId String
+  dueAt         DateTime
+  status        String @default("Upcoming")
+}
+
+model Notification {
+  id        String @id @default(cuid())
+  userId    String
+  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  body      String
+  readAt    DateTime?
+  createdAt DateTime @default(now())
+}
+
+model SLAClock {
+  id               String @id @default(cuid())
+  subApplicationId String @unique
+  subApplication   SubApplication @relation(fields: [subApplicationId], references: [id], onDelete: Cascade)
+  startedAt        DateTime @default(now())
+  pausedAt         DateTime?
+  pausedDays       Int @default(0)
+  dueAt            DateTime
+  status           String @default("On time")
+}
+
+model Scheme {
+  id          String @id
+  nameEn      String
+  nameMr      String
+  nameHi      String
+  descriptionEn String
+  descriptionMr String
+  descriptionHi String
+  benefit     String
+  illustrative Boolean @default(true)
+  rules       SchemeEligibilityRule[]
+  applications SchemeApplication[]
+}
+
+model SchemeEligibilityRule {
+  id        String @id @default(cuid())
+  schemeId  String
+  scheme    Scheme @relation(fields: [schemeId], references: [id], onDelete: Cascade)
+  conditions Json
+  explanation String
+}
+
+model SchemeApplication {
+  id        String @id @default(cuid())
+  schemeId  String
+  scheme    Scheme @relation(fields: [schemeId], references: [id])
+  userId    String
+  status    String @default("Draft")
+  createdAt DateTime @default(now())
+}
+
+model Grievance {
+  id            String @id
+  userId        String
+  user          User @relation(fields: [userId], references: [id])
+  applicationId String?
+  application   Application? @relation(fields: [applicationId], references: [id])
+  departmentId  String?
+  department    Department? @relation(fields: [departmentId], references: [id])
+  category      String
+  subject       String
+  status        String @default("Submitted")
+  createdAt     DateTime @default(now())
+  escalations   GrievanceEscalation[]
+}
+
+model GrievanceEscalation {
+  id           String @id @default(cuid())
+  grievanceId  String
+  grievance    Grievance @relation(fields: [grievanceId], references: [id], onDelete: Cascade)
+  level        String
+  escalatedAt  DateTime @default(now())
+  note         String?
+}
+
+model KnowledgeArticle {
+  id          String @id
+  slug        String @unique
+  titleEn     String
+  titleMr     String
+  titleHi     String
+  contentEn   String
+  contentMr   String
+  contentHi   String
+  category    String
+  illustrative Boolean @default(true)
+}
+
+model ChatSession {
+  id        String @id @default(cuid())
+  userId    String?
+  user      User? @relation(fields: [userId], references: [id])
+  locale    String @default("en")
+  consent   Boolean @default(false)
+  messages  ChatMessage[]
+  createdAt DateTime @default(now())
+}
+
+model ChatMessage {
+  id        String @id @default(cuid())
+  sessionId String
+  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role      String
+  content   String
+  feedback  Int?
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id        String @id @default(cuid())
+  actorId   String?
+  actor     User? @relation(fields: [actorId], references: [id])
+  action    String
+  entity    String
+  entityId  String
+  details   Json?
+  createdAt DateTime @default(now())
+}

@@ -1,0 +1,367 @@
+'use client';
+
+import { useEffect, useMemo, useState, type ComponentProps, type FormEvent } from 'react';
+import { useLocale, useTranslations } from 'next-intl';
+import { signIn as authenticate, useSession } from 'next-auth/react';
+import { Link as LocaleLink, useRouter } from '@/i18n/routing';
+import { ArrowLeft, ArrowRight, Bell, Check, CircleAlert, Clock3, FileText, Search, ShieldCheck, Upload } from 'lucide-react';
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { approvals, demoApplications, departments, knowledgeArticles, schemes, type DemoApplication } from '@/lib/demo-data';
+import { calculateRisk, generateChecklist, validateApplication, type ProjectProfile } from '@/lib/engines';
+import { WhatsAppGuide } from '@/components/whatsapp-guide';
+import { JourneyTimeline } from '@/components/journey-timeline';
+
+type DemoUser = { email: string; role: 'applicant' | 'officer' | 'nodal' | 'admin' };
+type StoredApp = DemoApplication & { query?: string; response?: string };
+type Issue = { id: string; subject: string; status: string; created: string };
+type LocalDocument = { name: string; size: number; status: string; type: string };
+type ApiApplication = { id: string; projectName: string; status: string; submittedAt: string | null; subApplications: Array<{ dueAt: string | null; department: { code: string } }> };
+
+const APP_KEY = 'udyog-mitra-applications';
+const CERTIFICATES = ['UM-CERT-2026-001', 'UM-CERT-2026-002', 'UM-CERT-2026-003'];
+const roleEmails = {
+  applicant: 'applicant@udyogmitra.demo',
+  officer: 'officer@udyogmitra.demo',
+  nodal: 'nodal@udyogmitra.demo',
+  admin: 'admin@udyogmitra.demo',
+} as const;
+
+function loadValue<T>(key: string, fallback: T): T {
+  try {
+    const value = window.localStorage.getItem(key);
+    return value ? JSON.parse(value) as T : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveValue(key: string, value: unknown) {
+  window.localStorage.setItem(key, JSON.stringify(value));
+}
+
+export function WorkspacePage({ segments }: { segments: string[] }) {
+  const t = useTranslations('Workspace');
+  const timelineText = useTranslations('Timeline');
+  const common = useTranslations('Common');
+  const locale = useLocale() as 'en' | 'mr' | 'hi';
+  const { data: session, status: sessionStatus } = useSession();
+  const router = useRouter();
+  const route = segments.join('/') || 'home';
+  const [step, setStep] = useState(0);
+  const [profile, setProfile] = useState<ProjectProfile>({ activity: 'manufacturing', sector: 'Orange', investmentLakhs: 180, employees: 24, powerKw: 75, waterKld: 12, hazardous: false, stage: 'Planning', landType: 'MIDC' });
+  const [loginRole, setLoginRole] = useState<DemoUser['role']>('applicant');
+  const [checklistReady, setChecklistReady] = useState(false);
+  const checklist = useMemo(() => generateChecklist(profile), [profile]);
+  const [applicationsList, setApplicationsList] = useState<StoredApp[]>(demoApplications);
+  const [loginEmail, setLoginEmail] = useState<string>(roleEmails.applicant);
+  const [notice, setNotice] = useState('');
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState('All');
+  const [selectedApplication, setSelectedApplication] = useState('');
+  const [issues, setIssues] = useState<Issue[]>([]);
+  const [documents, setDocuments] = useState<LocalDocument[]>([]);
+  const [articlesSearch, setArticlesSearch] = useState('');
+  const [certificateId, setCertificateId] = useState('');
+  const [formErrors, setFormErrors] = useState<string[]>([]);
+
+  useEffect(() => {
+    setApplicationsList(loadValue<StoredApp[]>(APP_KEY, demoApplications));
+    setIssues(loadValue<Issue[]>('udyog-mitra-grievances', []));
+    setDocuments(loadValue<LocalDocument[]>('udyog-mitra-documents', []));
+    setSelectedApplication(new URLSearchParams(window.location.search).get('id') ?? '');
+    const savedProfile = loadValue<ProjectProfile | null>('udyog-mitra-profile', null);
+    if (savedProfile) setProfile(savedProfile);
+    setChecklistReady(Boolean(loadValue<ProjectProfile | null>('udyog-mitra-profile', null)));
+  }, []);
+
+  useEffect(() => {
+    if (sessionStatus !== 'authenticated') return;
+    let cancelled = false;
+    void fetch('/api/applications').then(async (response) => {
+      if (!response.ok) return;
+      const payload = await response.json() as { data: ApiApplication[] };
+      const records = payload.data.map((application): StoredApp => {
+        const dueAt = application.subApplications.map((item) => item.dueAt).filter((date): date is string => Boolean(date)).sort()[0];
+        const dueIn = dueAt ? Math.ceil((new Date(dueAt).getTime() - Date.now()) / 86_400_000) : 15;
+        return {
+          id: application.id, business: application.projectName, district: 'Pune', status: application.status,
+          department: application.subApplications[0]?.department.code ?? 'Single Window', submitted: application.submittedAt?.slice(0, 10) ?? '',
+          dueIn, risk: 24, ownerEmail: session?.user.email ?? '',
+        };
+      });
+      if (cancelled) return;
+      setApplicationsList((current) => {
+        const serverIds = new Set(records.map((record) => record.id));
+        const localDrafts = current.filter((record) => record.status === 'Draft' && !serverIds.has(record.id));
+        const next = [...records, ...localDrafts];
+        saveValue(APP_KEY, next);
+        return next;
+      });
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [session?.user.email, sessionStatus]);
+
+  function updateProfile<K extends keyof ProjectProfile>(key: K, value: ProjectProfile[K]) {
+    setProfile((current) => ({ ...current, [key]: value }));
+  }
+
+  function persistApps(next: StoredApp[]) {
+    setApplicationsList(next);
+    saveValue(APP_KEY, next);
+  }
+
+  function startApplication() {
+    const id = `UM-2026-${String(Math.floor(10000 + Math.random() * 89999))}`;
+    const next: StoredApp = { id, business: 'My new business', district: 'Pune', status: 'Draft', department: 'Single Window', submitted: new Date().toISOString().slice(0, 10), dueIn: 30, risk: calculateRisk(profile), ownerEmail: session?.user.email ?? roleEmails.applicant };
+    const all = [next, ...applicationsList];
+    persistApps(all);
+    saveValue('udyog-mitra-profile', profile);
+    router.push(`/applications/${id}`);
+  }
+
+  function saveAndSubmitApplication(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const errors = validateApplication({
+      pan: String(form.get('pan') || ''), gstin: String(form.get('gstin') || ''), mobile: String(form.get('mobile') || ''), pincode: String(form.get('pincode') || ''),
+      investmentLakhs: Number(form.get('investment') || 0), msmeCategory: String(form.get('msme') || ''), plotArea: Number(form.get('plot') || 0), builtUpArea: Number(form.get('built') || 0), requiredDocumentCount: documents.length,
+    });
+    setFormErrors(errors);
+    if (errors.length) return;
+    const currentId = selectedApplication || applicationsList.find((app) => app.status === 'Draft')?.id;
+    const next = currentId ? applicationsList.map((app) => app.id === currentId ? { ...app, status: 'Submitted', business: String(form.get('business') || 'New business'), district: String(form.get('district') || 'Pune'), submitted: new Date().toISOString().slice(0, 10), dueIn: 15 } : app) : applicationsList;
+    persistApps(next);
+    setNotice(t('saved'));
+  }
+
+  async function signIn(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const selectedRole = loginRole;
+    const email = String(form.get('email'));
+    const result = await authenticate('credentials', { email, password: String(form.get('password')), role: selectedRole, redirect: false });
+    if (result?.error) {
+      setNotice(t('demoAccounts'));
+      return;
+    }
+    setNotice(t('signedIn'));
+    router.push(selectedRole === 'officer' ? '/officer/dashboard' : selectedRole === 'nodal' ? '/nodal/dashboard' : selectedRole === 'admin' ? '/admin' : '/dashboard');
+  }
+
+  async function registerAccount(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const response = await fetch('/api/register', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: form.get('name'), email: form.get('email'), mobile: form.get('mobile'), otp: form.get('otp'), password: form.get('password') }),
+    });
+    if (!response.ok) {
+      const data = await response.json() as { error?: { code?: string } };
+      setNotice(data.error?.code === 'INVALID_INPUT' && form.get('otp') !== '123456' ? t('otpInvalid') : t('registerError'));
+      return;
+    }
+    setNotice(t('registered'));
+    router.push('/login');
+  }
+
+  async function officerAction(id: string, status: string) {
+    const action = status === 'Approved' ? { action: 'approve' as const } : { action: 'reject' as const, reason: 'Illustrative rejection reason.' };
+    const response = await fetch(`/api/applications/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(action) });
+    if (!response.ok) { setNotice(t('demoAccounts')); return; }
+    const result = await response.json() as { data: { status: string } };
+    const updated = applicationsList.map((app) => app.id === id ? { ...app, status: result.data.status } : app);
+    persistApps(updated);
+    setNotice(status === 'Approved' ? t('approved') : t('queryRaised'));
+  }
+
+  async function raiseQuery(id: string) {
+    const message = window.prompt(t('queryPrompt'));
+    if (!message?.trim()) return;
+    const response = await fetch(`/api/applications/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'query', deficiencies: [message.trim()] }) });
+    if (!response.ok) { setNotice(t('demoAccounts')); return; }
+    const result = await response.json() as { data: { status: string } };
+    const updated = applicationsList.map((app) => app.id === id ? { ...app, status: result.data.status, query: message.trim() } : app);
+    persistApps(updated);
+    setNotice(t('queryRaised'));
+  }
+
+  function respondToQuery(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const response = String(new FormData(event.currentTarget).get('response') || '');
+    persistApps(applicationsList.map((app) => app.id === selectedApplication ? { ...app, status: 'Query Responded', response } : app));
+    setNotice(t('saved'));
+  }
+
+  function uploadDocument(event: FormEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0];
+    if (!file) return;
+    const validType = ['application/pdf', 'image/jpeg', 'image/png'].includes(file.type);
+    if (!validType || file.size > 10 * 1024 * 1024) {
+      setNotice(t('fileTypes'));
+      event.currentTarget.value = '';
+      return;
+    }
+    const next = [{ name: file.name, size: file.size, status: t('pending'), type: file.type }, ...documents];
+    setDocuments(next);
+    saveValue('udyog-mitra-documents', next);
+    setNotice(t('saved'));
+  }
+
+  function createGrievance(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const next = [{ id: `GRV-2026-${Math.floor(Math.random() * 89999 + 10000)}`, subject: String(form.get('subject')), status: 'Submitted', created: new Date().toLocaleDateString(locale) }, ...issues];
+    setIssues(next);
+    saveValue('udyog-mitra-grievances', next);
+    setNotice(t('ticketCreated'));
+    event.currentTarget.reset();
+  }
+
+  const role = session?.user.role;
+  const shownApplications = applicationsList.filter((app) => {
+    if (role === 'applicant' && app.ownerEmail !== session?.user.email) return false;
+    if (role === 'officer' && app.department !== 'MPCB') return false;
+    const searchable = `${app.id} ${app.business} ${app.department} ${app.district} ${app.status}`.toLowerCase();
+    const matchesSearch = searchable.includes(query.toLowerCase());
+    const matchesFilter = filter === 'All' || app.status.toLowerCase().includes(filter.toLowerCase());
+    return matchesSearch && matchesFilter;
+  });
+
+  const title = pageTitle(route, common, t);
+  const requiresSession = ['apply', 'applications', 'track', 'dashboard', 'officer/dashboard', 'nodal/dashboard', 'admin', 'documents', 'inspections', 'grievance', 'notifications', 'profile'].includes(route)
+    || route.startsWith('applications/') || route.startsWith('officer/applications/') || route.startsWith('journey/');
+  const roleAllowed = route.startsWith('officer/') ? ['officer', 'nodal', 'admin'].includes(role ?? '')
+    : route.startsWith('nodal/') ? ['nodal', 'admin'].includes(role ?? '')
+      : route === 'admin' ? role === 'admin'
+        : ['dashboard', 'apply', 'documents', 'profile', 'grievance'].includes(route) ? role === 'applicant'
+          : true;
+
+  if (requiresSession && sessionStatus === 'loading') return <main id="main-content" className="workspace-page"><div className="workspace-wrap narrow"><div className="panel empty-state">{t('signIn')}…</div></div></main>;
+  if (requiresSession && sessionStatus !== 'authenticated') return <main id="main-content" className="workspace-page"><div className="workspace-wrap narrow"><WorkspaceHeading title={t('signIn')} intro={t('legal')} /><Link className="button-primary" hrefLocalized="/login">{common('login')} <ArrowRight size={16} /></Link></div></main>;
+  if (requiresSession && !roleAllowed) return <main id="main-content" className="workspace-page"><div className="workspace-wrap narrow"><WorkspaceHeading title={t('demoAccounts')} intro={t('legal')} /><Link className="button-primary" hrefLocalized="/login">{t('changeRole')} <ArrowRight size={16} /></Link></div></main>;
+
+  if (route === 'know-your-approvals' || route.startsWith('checklist/')) return <main id="main-content" className="workspace-page"><div className="workspace-wrap"><WorkspaceHeading title={t('titleChecklist')} intro={t('introChecklist')} /><Wizard step={step} setStep={setStep} profile={profile} updateProfile={updateProfile} checklistReady={checklistReady} onGenerate={() => { setChecklistReady(true); saveValue('udyog-mitra-profile', profile); }} checklist={checklist} locale={locale} startApplication={startApplication} t={t} /></div></main>;
+
+  if (route.startsWith('journey/')) return <main id="main-content" className="workspace-page"><div className="workspace-wrap"><WorkspaceHeading title={timelineText('title')} intro={timelineText('intro')} /><JourneyTimeline applicationId={segments[1]} approvalIds={[]} profile={profile} /></div></main>;
+
+  if (route === 'whatsapp') return <WhatsAppGuide />;
+
+  if (route === 'register') return <main id="main-content" className="workspace-page"><div className="workspace-wrap narrow"><WorkspaceHeading title={common('register')} intro={t('mockOtp')} /><form className="panel form-grid" onSubmit={registerAccount}><label>{t('fullName')}<input name="name" autoComplete="name" minLength={2} required /></label><label>{t('email')}<input type="email" name="email" autoComplete="email" required /></label><label>{t('mobile')}<input name="mobile" inputMode="numeric" autoComplete="tel-national" pattern="[6-9][0-9]{9}" required /></label><label>{t('otp')}<input name="otp" inputMode="numeric" defaultValue="123456" pattern="[0-9]{6}" required /></label><label>{t('password')}<input type="password" name="password" minLength={8} autoComplete="new-password" required /></label><p className="muted small">{t('passwordHint')} {t('mockOtp')}</p><button className="button-primary" type="submit">{t('createAccount')} <ArrowRight size={16} /></button>{notice && <p role="status" className="notice">{notice}</p>}</form></div></main>;
+
+  if (route === 'login') return <main id="main-content" className="workspace-page"><div className="workspace-wrap narrow"><WorkspaceHeading title={t('signIn')} intro={t('demoAccounts')} /><form className="panel form-grid" onSubmit={signIn}><label>{t('role')}<select name="role" value={loginRole} onChange={(event) => { const role = event.target.value as DemoUser['role']; setLoginRole(role); setLoginEmail(roleEmails[role]); }}><option value="applicant">{t('applicant')}</option><option value="officer">{t('officer')}</option><option value="nodal">{t('nodal')}</option><option value="admin">{t('admin')}</option></select></label><label>{t('email')}<input type="email" name="email" value={loginEmail} onChange={(event) => setLoginEmail(event.target.value)} required /></label><label>{t('password')}<input type="password" name="password" defaultValue="demo123" required /></label><button className="button-primary" type="submit">{t('continue')} <ArrowRight size={16} /></button>{notice && <p role="status" className="notice">{notice}</p>}</form><p className="muted small">{t('legal')}</p></div></main>;
+
+  if (route === 'apply') return <main id="main-content" className="workspace-page"><div className="workspace-wrap"><WorkspaceHeading title={t('submitApplication')} intro={t('legal')} /><ApplicationForm onSubmit={saveAndSubmitApplication} errors={formErrors} documents={documents} onUpload={uploadDocument} t={t} /><p aria-live="polite" className="notice">{notice}</p></div></main>;
+
+  if (route === 'applications' || route === 'track' || route === 'dashboard' || route === 'officer/dashboard' || route === 'nodal/dashboard' || route === 'admin') {
+    const isOfficer = ['officer', 'nodal', 'admin'].includes(role ?? '');
+    return <main id="main-content" className="workspace-page"><div className="workspace-wrap"><WorkspaceHeading title={title} intro={route === 'dashboard' ? t('nextAction') : t('notOfficial')} />
+      {route === 'dashboard' && <ApplicantOverview applications={applicationsList} t={t} />}
+      {(route === 'officer/dashboard' || route === 'nodal/dashboard' || route === 'admin') && <AnalyticsOverview t={t} />}
+      <div className="toolbar"><label className="search-field"><Search size={17} /><input aria-label={t('search')} placeholder={t('search')} value={query} onChange={(event) => setQuery(event.target.value)} /></label><label>{t('filter')} <select value={filter} onChange={(event) => setFilter(event.target.value)}><option>{t('all')}</option><option>Submitted</option><option>Under Scrutiny</option><option>Query Raised</option><option>Approved</option></select></label><Link className="button-primary" hrefLocalized="/know-your-approvals">{t('newApplication')} <ArrowRight size={15} /></Link></div>
+      <ApplicationTable rows={shownApplications.slice(0, route === 'dashboard' ? 8 : 30)} officer={isOfficer} onApprove={officerAction} onQuery={raiseQuery} t={t} />
+      {route === 'dashboard' && <section className="panel"><h2>{t('nextAction')}</h2><p>{applicationsList.some((app) => app.status === 'Query Raised') ? t('respond') : t('titleChecklist')}</p><Link className="button-quiet" hrefLocalized={applicationsList.some((app) => app.status === 'Query Raised') ? '/applications' : '/know-your-approvals'}>{t('open')} <ArrowRight size={15} /></Link></section>}
+    </div></main>;
+  }
+
+  if (route.startsWith('applications/') || route.startsWith('officer/applications/')) {
+    const id = segments.at(-1);
+    const app = shownApplications.find((item) => item.id === id);
+    if (!app) return <main id="main-content" className="workspace-page"><div className="workspace-wrap narrow"><WorkspaceHeading title={t('noRecords')} intro={t('legal')} /></div></main>;
+    return <main id="main-content" className="workspace-page"><div className="workspace-wrap"><WorkspaceHeading title={app?.id ?? t('applications')} intro={`${app?.business ?? ''} · ${app?.status ?? ''}`} /><div className="two-column"><section className="panel"><h2>{t('stageTimeline')}</h2><ol className="status-timeline">{['Draft', 'Submitted', 'Under Scrutiny', 'Query Raised', 'Approved'].map((status) => <li key={status} data-active={status === app?.status}>{status}</li>)}</ol><p>{t('risk')}: {app?.risk}/100</p><p>{t('due')}: {app?.dueIn} days</p><Link hrefLocalized={`/journey/${app.id}`} className="button-quiet">{timelineText('viewJourney')} <ArrowRight size={15} /></Link></section><section className="panel"><h2>{t('documents')}</h2>{app?.status === 'Query Raised' ? <form className="form-grid" onSubmit={respondToQuery}><p>{app.query}</p><label>{t('response')}<textarea name="response" required rows={4} /></label><button className="button-primary">{t('send')}</button></form> : <><p>{t('legal')}</p><Link hrefLocalized="/apply" className="button-quiet">{t('open')}</Link></>}</section></div></div></main>;
+  }
+
+  if (route === 'documents') return <main id="main-content" className="workspace-page"><div className="workspace-wrap"><WorkspaceHeading title={t('documents')} intro={t('fileTypes')} /><section className="panel upload-panel"><Upload size={22} /><label className="button-quiet">{t('upload')}<input className="sr-only" type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={uploadDocument} /></label><span className="muted">{t('fileTypes')}</span></section><div className="record-list">{documents.map((doc) => <div className="record-row" key={`${doc.name}-${doc.size}`}><FileText /><span>{doc.name}</span><span className="status-pill">{doc.status}</span><span>{(doc.size / 1024).toFixed(0)} KB</span></div>)}</div></div></main>;
+
+  if (route === 'incentives' || route.startsWith('schemes')) return <main id="main-content" className="workspace-page"><div className="workspace-wrap"><WorkspaceHeading title={t('schemes')} intro={t('notOfficial')} /><div className="record-grid">{schemes.map((scheme) => <article className="panel scheme-card" key={scheme.id}><span className="section-kicker">{t('notOfficial')}</span><h2>{scheme.name[locale]}</h2><p>{scheme.description[locale]}</p><strong>{t('benefit')}: {scheme.benefit}</strong><p className="muted">{t('eligible')}: {scheme.tags.join(', ')}</p><button className="button-quiet" onClick={() => setNotice(t('schemeClaimed'))}>{t('applyScheme')} <ArrowRight size={15} /></button></article>)}</div>{notice && <p role="status" className="notice">{notice}</p>}</div></main>;
+
+  if (route === 'knowledge' || route.startsWith('knowledge/')) {
+    const filtered = knowledgeArticles.filter((article) => `${article.title[locale]} ${article.category} ${article.tags.join(' ')}`.toLowerCase().includes(articlesSearch.toLowerCase()));
+    const article = segments[1] ? knowledgeArticles.find((item) => item.slug === segments[1]) : null;
+    return <main id="main-content" className="workspace-page"><div className="workspace-wrap"><WorkspaceHeading title={t('knowledge')} intro={t('guidanceOnly')} />{article ? <article className="panel article-body"><span className="section-kicker">{article.category}</span><h2>{article.title[locale]}</h2><p>{article.title[locale]}. {t('guidanceOnly')} {t('legal')}</p><Link className="button-quiet" hrefLocalized="/knowledge"><ArrowLeft size={15} />{t('back')}</Link></article> : <><label className="search-field full"><Search size={17} /><input value={articlesSearch} onChange={(event) => setArticlesSearch(event.target.value)} placeholder={t('articleSearch')} /></label><div className="record-grid">{filtered.map((item) => <Link hrefLocalized={`/knowledge/${item.slug}`} className="panel article-card" key={item.slug}><span className="section-kicker">{item.category}</span><h2>{item.title[locale]}</h2><span className="service-arrow">{t('showMore')} <ArrowRight size={14} /></span></Link>)}</div></>}</div></main>;
+  }
+
+  if (route === 'grievance' || route.startsWith('grievance/')) return <main id="main-content" className="workspace-page"><div className="workspace-wrap"><WorkspaceHeading title={t('grievance')} intro={t('legal')} /><form className="panel form-grid" onSubmit={createGrievance}><label>{t('category')}<select name="category"><option>Service delay</option><option>Application query</option><option>Officer conduct</option><option>Other</option></select></label><label>{t('department')}<select name="department">{departments.map((department) => <option key={department}>{department}</option>)}</select></label><label>{t('subject')}<input name="subject" required maxLength={120} /></label><label>{t('description')}<textarea name="description" required rows={4} maxLength={1000} /></label><button className="button-primary">{t('createTicket')} <ArrowRight size={15} /></button></form><div className="record-list">{issues.map((issue) => <div className="record-row" key={issue.id}><span>{issue.id}</span><strong>{issue.subject}</strong><span className="status-pill">{issue.status}</span><span>{issue.created}</span></div>)}</div>{notice && <p role="status" className="notice">{notice}</p>}</div></main>;
+
+  if (route === 'inspections') return <main id="main-content" className="workspace-page"><div className="workspace-wrap"><WorkspaceHeading title={t('inspectionPlanner')} intro={t('notOfficial')} /><div className="record-grid">{applicationsList.filter((app) => ['Inspection Scheduled', 'Under Scrutiny'].includes(app.status)).slice(0, 8).map((app, index) => <article className="panel inspection-card" key={app.id}><span className="section-kicker">{app.department}</span><h2>{app.business}</h2><p>{app.id} · {app.district}</p><p><Clock3 size={15} /> {new Date(Date.now() + (index + 1) * 86400000).toLocaleDateString(locale)}</p><button className="button-quiet" onClick={() => setNotice(t('visitAccepted'))}>{t('acceptSlot')}</button></article>)}</div>{notice && <p role="status" className="notice">{notice}</p>}</div></main>;
+
+  if (route === 'notifications') return <main id="main-content" className="workspace-page"><div className="workspace-wrap"><WorkspaceHeading title={t('notifications')} intro={t('saved')} /><div className="record-list">{applicationsList.filter((app) => ['Query Raised', 'Inspection Scheduled', 'Approved'].includes(app.status)).slice(0, 12).map((app) => <div className="record-row" key={app.id}><Bell /><span>{app.id}: {app.status}</span><Link className="service-arrow" hrefLocalized={`/applications/${app.id}`}>{t('open')} <ArrowRight size={14} /></Link></div>)}</div></div></main>;
+
+  if (route === 'profile') return <main id="main-content" className="workspace-page"><div className="workspace-wrap narrow"><WorkspaceHeading title={t('profile')} intro={t('legal')} /><form className="panel form-grid" onSubmit={(event) => { event.preventDefault(); saveValue('udyog-mitra-profile', profile); setNotice(t('saved')); }}><label>{t('legalName')}<input defaultValue="Sahyadri Foods Pvt Ltd" /></label><label>{t('activity')}<select value={profile.activity} onChange={(event) => updateProfile('activity', event.target.value as ProjectProfile['activity'])}><option value="manufacturing">{t('manufacturing')}</option><option value="service">{t('service')}</option><option value="trading">{t('trading')}</option></select></label><label>{t('investment')}<input type="number" value={profile.investmentLakhs} onChange={(event) => updateProfile('investmentLakhs', Number(event.target.value))} /></label><label>{t('employees')}<input type="number" value={profile.employees} onChange={(event) => updateProfile('employees', Number(event.target.value))} /></label><button className="button-primary">{t('save')}</button></form><p role="status" className="notice">{notice}</p></div></main>;
+
+  if (route.startsWith('verify/')) return <main id="main-content" className="workspace-page"><div className="workspace-wrap narrow"><WorkspaceHeading title={t('certificateLookup')} intro={t('notOfficial')} /><section className="panel"><label>{t('certificateId')}<input value={certificateId || segments[1] || ''} onChange={(event) => setCertificateId(event.target.value)} /></label>{CERTIFICATES.includes(certificateId || segments[1]) ? <p className="verified-record"><ShieldCheck />{t('verifiedCertificate')} · {certificateId || segments[1]}</p> : <p className="muted">{t('notFound')}</p>}</section></div></main>;
+
+  if (['about', 'contact', 'accessibility', 'privacy', 'terms', 'sitemap'].includes(route)) return <main id="main-content" className="workspace-page"><div className="workspace-wrap narrow"><WorkspaceHeading title={title} intro={route === 'contact' ? t('contact') : t('legal')} /><section className="panel article-body"><p>{t('legal')}</p><p>{common('prototype')}</p>{route === 'contact' && <p>{t('phone')}: 1800-000-2026 · {t('emailUs')}: support@udyogmitra.demo</p>}{route === 'sitemap' && <div className="record-grid compact">{['know-your-approvals', 'apply', 'applications', 'documents', 'inspections', 'incentives', 'grievance', 'knowledge', 'dashboard', 'officer/dashboard', 'admin'].map((item) => <Link className="button-quiet" hrefLocalized={`/${item}`} key={item}>{item.replaceAll('/', ' · ')}</Link>)}</div>}</section></div></main>;
+
+  return <main id="main-content" className="workspace-page"><div className="workspace-wrap narrow"><WorkspaceHeading title="404" intro={t('noRecords')} /><Link hrefLocalized="/" className="button-primary">{t('backHome')} <ArrowRight size={15} /></Link></div></main>;
+}
+
+function pageTitle(route: string, common: ReturnType<typeof useTranslations>, t: ReturnType<typeof useTranslations>) {
+  if (route.startsWith('officer/')) return t('officer');
+  if (route.startsWith('nodal/')) return t('nodal');
+  if (route === 'admin') return t('admin');
+  if (route === 'applications' || route === 'track') return common(route === 'track' ? 'track' : 'apply');
+  if (route === 'dashboard') return t('dashboard');
+  if (route === 'about') return t('about');
+  if (route === 'contact') return t('contact');
+  if (route === 'incentives' || route.startsWith('schemes')) return t('schemes');
+  if (route === 'knowledge' || route.startsWith('knowledge/')) return t('knowledge');
+  if (route === 'grievance' || route.startsWith('grievance/')) return t('grievance');
+  if (route === 'inspections') return t('inspectionPlanner');
+  if (route === 'documents') return t('documents');
+  if (route === 'notifications') return t('notifications');
+  if (route === 'profile') return t('profile');
+  if (route.startsWith('verify/')) return t('certificateLookup');
+  if (route === 'privacy' || route === 'terms') return t('privacy');
+  if (route === 'accessibility') return common('screenReader');
+  if (route === 'sitemap') return common('home');
+  return common('contact');
+}
+
+function WorkspaceHeading({ title, intro }: { title: string; intro: string }) {
+  return <header className="workspace-heading"><span className="section-kicker">UDYOG MITRA · PROTOTYPE</span><h1>{title}</h1><p>{intro}</p></header>;
+}
+
+function Wizard({ step, setStep, profile, updateProfile, checklistReady, onGenerate, checklist, locale, startApplication, t }: {
+  step: number; setStep: (step: number) => void; profile: ProjectProfile; updateProfile: <K extends keyof ProjectProfile>(key: K, value: ProjectProfile[K]) => void;
+  checklistReady: boolean; onGenerate: () => void; checklist: typeof approvals; locale: 'en' | 'mr' | 'hi'; startApplication: () => void; t: ReturnType<typeof useTranslations>;
+}) {
+  const stageLabel: Record<string, string> = { Planning: t('planning'), 'Pre-establishment': t('preEstablishment'), 'Pre-operation': t('preOperation'), Operational: t('operational') };
+  const grouped = ['Planning', 'Pre-establishment', 'Pre-operation', 'Operational'].map((stage) => ({ stage, items: checklist.filter((item) => item.stage === stage) })).filter((group) => group.items.length);
+  const journeyDays = grouped.reduce((sum, group) => sum + Math.max(...group.items.map((item) => item.days)), 0);
+  return <div className="wizard-layout"><aside className="wizard-progress panel"><span>{t('project')}</span>{[t('activity'), t('sector'), t('estimated')].map((label, index) => <button className={step === index ? 'active' : ''} onClick={() => setStep(index)} key={label}><span>{index + 1}</span>{label}</button>)}</aside><section className="panel wizard-panel">
+    {!checklistReady ? <><div className="progress-track"><span style={{ width: `${((step + 1) / 3) * 100}%` }} /></div><h2>{step === 0 ? t('activity') : step === 1 ? t('sector') : t('project')}</h2>
+      {step === 0 && <div className="form-grid two"><label>{t('activity')}<select value={profile.activity} onChange={(event) => updateProfile('activity', event.target.value as ProjectProfile['activity'])}><option value="manufacturing">{t('manufacturing')}</option><option value="service">{t('service')}</option><option value="trading">{t('trading')}</option></select></label><label>{t('sector')}<select value={profile.sector} onChange={(event) => updateProfile('sector', event.target.value)}><option value="Green">{t('green')}</option><option value="Orange">{t('orange')}</option><option value="Red">{t('red')}</option></select></label><label>{t('stage')}<select value={profile.stage} onChange={(event) => updateProfile('stage', event.target.value)}><option>Planning</option><option>Pre-establishment</option><option>Pre-operation</option><option>Operational</option></select></label><label>{t('land')}<select value={profile.landType} onChange={(event) => updateProfile('landType', event.target.value)}><option value="MIDC">{t('midc')}</option><option value="Non-MIDC">{t('nonMidc')}</option><option value="Municipal">{t('municipal')}</option></select></label></div>}
+      {step === 1 && <div className="form-grid two"><label>{t('investment')}<input type="number" min="0" value={profile.investmentLakhs} onChange={(event) => updateProfile('investmentLakhs', Number(event.target.value))} /></label><label>{t('employees')}<input type="number" min="0" value={profile.employees} onChange={(event) => updateProfile('employees', Number(event.target.value))} /></label><label>{t('power')}<input type="number" min="0" value={profile.powerKw} onChange={(event) => updateProfile('powerKw', Number(event.target.value))} /></label><label>{t('water')}<input type="number" min="0" value={profile.waterKld} onChange={(event) => updateProfile('waterKld', Number(event.target.value))} /></label></div>}
+      {step === 2 && <div className="form-grid"><label className="check-row"><input type="checkbox" checked={profile.hazardous} onChange={(event) => updateProfile('hazardous', event.target.checked)} />{t('hazardous')}</label><p className="muted">{t('introChecklist')}</p></div>}
+      <div className="form-actions">{step > 0 && <button className="button-quiet" onClick={() => setStep(step - 1)}><ArrowLeft size={15} />{t('back')}</button>}{step < 2 ? <button className="button-primary" onClick={() => setStep(step + 1)}>{t('next')} <ArrowRight size={15} /></button> : <button className="button-primary" onClick={onGenerate}>{t('generate')} <ArrowRight size={15} /></button>}</div>
+    </> : <><div className="result-heading"><div><span className="section-kicker">{t('notOfficial')}</span><h2>{t('checklist')}</h2></div><span className="estimate-pill"><Clock3 size={15} /> {t('estimated')}: {journeyDays} {t('days')}</span></div><p className="muted">{t('guidanceOnly')}</p><div className="timeline-groups">{grouped.map((group) => <section className="stage-group" key={group.stage}><h3>{stageLabel[group.stage]}</h3>{group.items.map((item) => <article className="approval-row" key={item.id}><div className="approval-main"><h4>{item.name[locale]}</h4><span>{t('authority')}: {item.department}</span><p>{t('why')}: {item.name[locale]} for {profile.activity} at the {stageLabel[item.stage].toLowerCase()} stage.</p><small>{t('documents')}: {item.documents[0][locale]}</small></div><div className="approval-meta"><span>{item.days} {t('days')}</span><span>₹{item.fee.toLocaleString(locale)}*</span></div></article>)}</section>)}</div><p className="prototype-note">* {t('notOfficial')} · {t('guidanceOnly')}</p><JourneyTimeline approvalIds={checklist.map((item) => item.id)} profile={profile} /><button className="button-primary" onClick={startApplication}>{t('newApplication')} <ArrowRight size={16} /></button></>}
+  </section></div>;
+}
+
+function ApplicationTable({ rows, officer, onApprove, onQuery, t }: { rows: StoredApp[]; officer: boolean; onApprove: (id: string, status: string) => void; onQuery: (id: string) => void; t: ReturnType<typeof useTranslations> }) {
+  if (!rows.length) return <div className="panel empty-state"><CircleAlert /><p>{t('noRecords')}</p></div>;
+  return <div className="table-wrap panel"><table><thead><tr><th>{t('appId')}</th><th>{t('businessName')}</th><th>{t('department')}</th><th>{t('district')}</th><th>{t('status')}</th><th>{t('due')}</th><th>{t('actions')}</th></tr></thead><tbody>{rows.map((app) => <tr key={app.id}><td><Link className="table-link" hrefLocalized={`/applications/${app.id}`}>{app.id}</Link></td><td>{app.business}</td><td>{app.department}</td><td>{app.district}</td><td><span className={`status-pill ${app.status === 'Query Raised' ? 'warning' : app.status === 'Approved' ? 'success' : ''}`}>{app.status}</span></td><td>{app.dueIn < 0 ? t('breached') : `${app.dueIn} d`}</td><td><div className="table-actions"><Link className="icon-action" hrefLocalized={`/applications/${app.id}`} aria-label={t('open')} title={t('open')}><ArrowRight size={15} /></Link>{officer && app.status !== 'Approved' && <><button className="icon-action success" onClick={() => onApprove(app.id, 'Approved')} title={t('approve')} aria-label={t('approve')}><Check size={15} /></button><button className="icon-action warning" onClick={() => onQuery(app.id)} title={t('raiseQuery')} aria-label={t('raiseQuery')}><CircleAlert size={15} /></button></>}</div></td></tr>)}</tbody></table></div>;
+}
+
+function ApplicantOverview({ applications, t }: { applications: StoredApp[]; t: ReturnType<typeof useTranslations> }) {
+  const queryCount = applications.filter((app) => app.status === 'Query Raised').length;
+  return <><div className="metric-grid"><Metric value={applications.length} label={t('applications')} /><Metric value={applications.filter((app) => app.status === 'Approved').length} label={t('approved')} /><Metric value={queryCount} label={t('queryRaised')} /><Metric value={applications.filter((app) => app.dueIn <= 3).length} label={t('atRisk')} /></div><div className="panel next-action"><span className="service-icon"><Bell size={20} /></span><div><strong>{t('nextAction')}</strong><p>{queryCount ? t('respond') : t('titleChecklist')}</p></div><Link className="button-quiet" hrefLocalized={queryCount ? '/applications' : '/know-your-approvals'}>{t('open')} <ArrowRight size={15} /></Link></div></>;
+}
+
+function AnalyticsOverview({ t }: { t: ReturnType<typeof useTranslations> }) {
+  const chartData = departments.slice(0, 6).map((department, index) => ({ department, applications: [42, 34, 28, 22, 18, 14][index], breaches: [12, 8, 5, 9, 3, 4][index] }));
+  return <><div className="metric-grid"><Metric value="30" label={t('totalApplications')} /><Metric value="18 d" label={t('averageDays')} /><Metric value="6" label={t('breaches')} /><Metric value="28%" label={t('queryRate')} /></div><section className="panel chart-panel"><div><h2>{t('analytics')}</h2><p className="muted">{t('notOfficial')}</p></div><div className="chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={chartData} margin={{ top: 12, right: 12, bottom: 32, left: -16 }}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="department" angle={-25} textAnchor="end" interval={0} tick={{ fontSize: 10 }} /><YAxis tick={{ fontSize: 10 }} /><Tooltip /><Bar dataKey="applications" fill="#0b527d" radius={[4, 4, 0, 0]} /><Bar dataKey="breaches" fill="#e88424" radius={[4, 4, 0, 0]} /></BarChart></ResponsiveContainer></div></section><aside className="insight"><CircleAlert /><div><strong>{t('insight')}</strong><p>{t('insightText')}</p></div></aside></>;
+}
+
+function Metric({ value, label }: { value: string | number; label: string }) {
+  return <div className="metric panel"><strong>{value}</strong><span>{label}</span></div>;
+}
+
+type LocalizedLinkProps = Omit<ComponentProps<'a'>, 'href'> & { hrefLocalized: string };
+function Link({ hrefLocalized, ...props }: LocalizedLinkProps) {
+  return <LocaleLink href={hrefLocalized as never} {...props} />;
+}
+
+function ApplicationForm({ onSubmit, errors, documents, onUpload, t }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void; errors: string[]; documents: LocalDocument[]; onUpload: (event: FormEvent<HTMLInputElement>) => void; t: ReturnType<typeof useTranslations> }) {
+  return <form className="application-form" onSubmit={onSubmit}><div className="readiness-panel panel"><ShieldCheck /><div><strong>{t('readiness')}: {Math.max(0, 100 - errors.length * 18)}%</strong><span>{errors.length ? t('fixList') : t('readinessReady')}</span></div></div><div className="two-column"><section className="panel form-grid two"><h2>{t('profile')}</h2><label>{t('legalName')}<input name="business" defaultValue="Sahyadri Foods Pvt Ltd" required /></label><label>{t('district')}<select name="district"><option>Pune</option><option>Nashik</option><option>Nagpur</option><option>Kolhapur</option><option>Raigad</option></select></label><label>{t('pan')}<input name="pan" defaultValue="ABCDE1234F" required /></label><label>{t('mobile')}<input name="mobile" defaultValue="9876543210" required /></label><label>{t('pincode')}<input name="pincode" defaultValue="411001" required /></label><label>GSTIN<input name="gstin" defaultValue="27ABCDE1234F1Z5" /></label><label>{t('investment')}<input type="number" name="investment" defaultValue="180" /></label><label>{t('msme')}<select name="msme"><option value="Micro">Micro</option><option value="Small">Small</option><option value="Medium">Medium</option><option value="Not MSME">Not MSME</option></select></label><label>{t('plotArea')}<input type="number" name="plot" defaultValue="1000" /></label><label>{t('builtUpArea')}<input type="number" name="built" defaultValue="700" /></label></section><section className="panel form-grid"><h2>{t('documents')}</h2><label className="upload-inline"><Upload size={17} />{t('upload')}<input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={onUpload} /></label><p className="muted small">{t('fileTypes')}</p>{documents.map((doc) => <div className="record-row" key={doc.name}><FileText size={16} />{doc.name}<span className="status-pill">{doc.status}</span></div>)}</section></div>{errors.length > 0 && <div className="error-list" role="alert"><strong>{t('fixList')}</strong>{errors.map((error) => <p key={error}>{error}</p>)}</div>}<button className="button-primary" type="submit">{t('submitApplication')} <ArrowRight size={16} /></button></form>;
+}
