@@ -1,10 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Image from 'next/image';
 import { useLocale, useTranslations } from 'next-intl';
 import { usePathname, useRouter, Link } from '@/i18n/routing';
-import { ChevronDown, MapPinned, Menu, MessageCircle, X } from 'lucide-react';
+import { ChevronDown, Download, MapPinned, Menu, MessageCircle, X } from 'lucide-react';
+
+type BeforeInstallPromptEvent = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }> };
 
 const items = [
   ['home', '/'], ['about', '/about'], ['approvals', '/know-your-approvals'], ['apply', '/apply'],
@@ -14,6 +16,7 @@ const items = [
 
 export function PortalHeader() {
   const t = useTranslations('Common');
+  const pwaText = useTranslations('PWA');
   const whatsappText = useTranslations('WhatsApp');
   const locale = useLocale();
   const pathname = usePathname();
@@ -21,9 +24,26 @@ export function PortalHeader() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [contrast, setContrast] = useState(false);
   const [dark, setDark] = useState(false);
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+
+  useEffect(() => {
+    const captureInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as BeforeInstallPromptEvent);
+    };
+    window.addEventListener('beforeinstallprompt', captureInstallPrompt);
+    return () => window.removeEventListener('beforeinstallprompt', captureInstallPrompt);
+  }, []);
 
   function setDisplay(mode: 'dark-mode' | 'contrast-mode', active: boolean) {
     document.documentElement.classList.toggle(mode, active);
+  }
+
+  async function installApp() {
+    if (!installPrompt) return;
+    await installPrompt.prompt();
+    await installPrompt.userChoice;
+    setInstallPrompt(null);
   }
 
   return (
@@ -50,6 +70,7 @@ export function PortalHeader() {
             <Link href="/login">{t('loginShort')}</Link>
             <Link href="/register">{t('register')}</Link>
             <Link className="whatsapp-nav-link" href="/whatsapp" aria-label={whatsappText('menuLabel')} title={whatsappText('menuLabel')}><MessageCircle size={15} /><span>{whatsappText('menuLabel')}</span></Link>
+            {installPrompt && <button className="install-app-button" onClick={() => void installApp()}><Download size={14} />{pwaText('install')}</button>}
           </div>
         </div>
       </div>

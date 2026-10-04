@@ -46,6 +46,10 @@ npm run build
 npm run --silent eval:training-jsonl > /tmp/udyog-mitra-l1.jsonl
 ```
 
+## Vercel Prototype
+
+See [Vercel deployment setup](docs/deployment-vercel.md) for Turso/libSQL environment variables and remote migration steps. The prototype fails fast on Vercel if persistent database configuration is missing.
+
 ## Prototype status
 
-The catalog and seeded records are illustrative. Interactive page actions are persisted in the browser for the demo; authenticated REST application records use SQLite. Do not enter real personal or business information. Identity verification, OCR, DigiLocker, government source checks, WhatsApp messaging, payment, and official approval rules require provider onboarding and configuration before production use. Phase A consent/audit/review stores are in-memory. Without `GEMINI_API_KEY` and explicit per-user consent, Saathi uses local rule-based language; L2 facts remain the only source of figures. The WhatsApp guide works without keys and reports mock mode until configured. The hero uses the image URL supplied with the project request; confirm image licensing before publishing.
+The catalog and seeded records are illustrative. Interactive page actions are persisted in the browser for the demo; authenticated REST application records use SQLite locally or Turso/libSQL when deployed. Uploaded bytes and document links use Prisma storage; DigiLocker samples remain synthetic. Uploads are not malware-scanned. Do not enter real personal or business information. Identity verification, OCR, live DigiLocker, government source checks, WhatsApp messaging, payment, and official approval rules require provider onboarding and configuration before production use. Password sign-in and the fixed demo OTP are not government identity verification; never treat them as eKYC. External-AI consent, audit sinks, and the general review queue remain in-memory prototype stores. Without `GEMINI_API_KEY` and explicit per-user consent, Saathi uses local rule-based language; L2 facts remain the only source of figures. The WhatsApp guide works without keys and reports mock mode until configured. The PWA can be installed from supported browsers; a support WhatsApp number must be configured before a direct chat link appears. The hero uses the image URL supplied with the project request; confirm image licensing before publishing.
