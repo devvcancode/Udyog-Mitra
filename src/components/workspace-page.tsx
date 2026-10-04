@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, type ComponentProps, type FormEvent } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
-import { signIn as authenticate, useSession } from 'next-auth/react';
+import { useSession } from 'next-auth/react';
 import { Link as LocaleLink, useRouter } from '@/i18n/routing';
 import { ArrowLeft, ArrowRight, Bell, Check, CircleAlert, Clock3, FileText, Search, ShieldCheck, Upload } from 'lucide-react';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
@@ -22,6 +22,7 @@ type ApiApplication = { id: string; projectName: string; status: string; submitt
 type ApplicationListResponse = { data: ApiApplication[]; pagination: { totalPages: number } };
 
 const APP_KEY = 'udyog-mitra-applications';
+const PREVIEW_ROLE_KEY = 'udyog-mitra-preview-role';
 const CERTIFICATES = ['UM-CERT-2026-001', 'UM-CERT-2026-002', 'UM-CERT-2026-003'];
 const roleEmails = {
   applicant: 'applicant@udyogmitra.demo',
@@ -43,6 +44,10 @@ function saveValue(key: string, value: unknown) {
   window.localStorage.setItem(key, JSON.stringify(value));
 }
 
+function previewUserFor(role: DemoUser['role']): DemoUser {
+  return { role, email: roleEmails[role] };
+}
+
 function mapApiDocument(document: ApiDocument): LocalDocument {
   return { reference: document.reference, name: document.displayName, size: document.byteSize, status: document.status, type: document.documentType, source: document.source, simulated: document.simulated, verification: document.verification };
 }
@@ -51,6 +56,7 @@ export function WorkspacePage({ segments }: { segments: string[] }) {
   const t = useTranslations('Workspace');
   const applicationText = useTranslations('Applications');
   const documentText = useTranslations('Documents');
+  const previewText = useTranslations('Preview');
   const timelineText = useTranslations('Timeline');
   const common = useTranslations('Common');
   const locale = useLocale() as 'en' | 'mr' | 'hi';
@@ -60,6 +66,8 @@ export function WorkspacePage({ segments }: { segments: string[] }) {
   const [step, setStep] = useState(0);
   const [profile, setProfile] = useState<ProjectProfile>({ activity: 'manufacturing', sector: 'Orange', investmentLakhs: 180, employees: 24, powerKw: 75, waterKld: 12, hazardous: false, stage: 'Planning', landType: 'MIDC' });
   const [loginRole, setLoginRole] = useState<DemoUser['role']>('applicant');
+  const [previewUser, setPreviewUser] = useState<DemoUser | null>(null);
+  const [previewUserLoaded, setPreviewUserLoaded] = useState(false);
   const [checklistReady, setChecklistReady] = useState(false);
   const [entityType, setEntityType] = useState('proprietorship');
   const checklist = useMemo(() => generateChecklist(profile), [profile]);
@@ -69,7 +77,6 @@ export function WorkspacePage({ segments }: { segments: string[] }) {
   const [applicationsLoading, setApplicationsLoading] = useState(true);
   const [applicationsError, setApplicationsError] = useState(false);
   const [applicationRefresh, setApplicationRefresh] = useState(0);
-  const [loginEmail, setLoginEmail] = useState<string>(roleEmails.applicant);
   const [notice, setNotice] = useState('');
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('All');
@@ -84,8 +91,12 @@ export function WorkspacePage({ segments }: { segments: string[] }) {
   useEffect(() => {
     setApplicationsList(loadValue<StoredApp[]>(APP_KEY, demoApplications));
     setIssues(loadValue<Issue[]>('udyog-mitra-grievances', []));
+    setDocuments(loadValue<LocalDocument[]>('udyog-mitra-documents', []));
     setSelectedApplication(new URLSearchParams(window.location.search).get('id') ?? '');
     setEntityType(loadValue('udyog-mitra-entity-type', 'proprietorship'));
+    const savedRole = window.localStorage.getItem(PREVIEW_ROLE_KEY);
+    if (savedRole && Object.hasOwn(roleEmails, savedRole)) setPreviewUser(previewUserFor(savedRole as DemoUser['role']));
+    setPreviewUserLoaded(true);
     const savedProfile = loadValue<ProjectProfile | null>('udyog-mitra-profile', null);
     if (savedProfile) setProfile(savedProfile);
     setChecklistReady(Boolean(loadValue<ProjectProfile | null>('udyog-mitra-profile', null)));
@@ -103,7 +114,10 @@ export function WorkspacePage({ segments }: { segments: string[] }) {
   }, [session?.user.role, sessionStatus]);
 
   useEffect(() => {
-    if (sessionStatus !== 'authenticated') return;
+    if (sessionStatus !== 'authenticated') {
+      setApplicationsLoading(false);
+      return;
+    }
     let cancelled = false;
     const controller = new AbortController();
     const params = new URLSearchParams({ search: query, page: String(applicationPage), pageSize: '25' });
@@ -152,7 +166,7 @@ export function WorkspacePage({ segments }: { segments: string[] }) {
 
   function startApplication() {
     const id = `UM-2026-${String(Math.floor(10000 + Math.random() * 89999))}`;
-    const next: StoredApp = { id, business: 'My new business', district: 'Pune', status: 'Draft', department: 'Single Window', submitted: new Date().toISOString().slice(0, 10), dueIn: 30, risk: calculateRisk(profile), ownerEmail: session?.user.email ?? roleEmails.applicant };
+    const next: StoredApp = { id, business: 'My new business', district: 'Pune', status: 'Draft', department: 'Single Window', submitted: new Date().toISOString().slice(0, 10), dueIn: 30, risk: calculateRisk(profile), ownerEmail: session?.user.email ?? previewUser?.email ?? roleEmails.applicant };
     const all = [next, ...applicationsList];
     persistApps(all);
     saveValue('udyog-mitra-profile', profile);
@@ -170,6 +184,18 @@ export function WorkspacePage({ segments }: { segments: string[] }) {
     });
     setFormErrors(errors);
     if (errors.length) return;
+    if (!session && previewUser) {
+      const id = `PREVIEW-${Date.now()}`;
+      const localApplication: StoredApp = {
+        id, business: String(form.get('business') || 'New business'), district: String(form.get('district') || 'Pune'), status: 'Submitted',
+        department: 'Single Window', submitted: new Date().toISOString().slice(0, 10), dueIn: 15,
+        risk: calculateRisk(profile), ownerEmail: previewUser.email,
+      };
+      persistApps([localApplication, ...applicationsList]);
+      setNotice(previewText('localSave'));
+      router.push('/applications');
+      return;
+    }
     setApplicationSubmitting(true);
     try {
       const response = await fetch('/api/applications', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
@@ -187,17 +213,14 @@ export function WorkspacePage({ segments }: { segments: string[] }) {
     }
   }
 
-  async function signIn(event: FormEvent<HTMLFormElement>) {
+  function signIn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
     const selectedRole = loginRole;
-    const email = String(form.get('email'));
-    const result = await authenticate('credentials', { email, password: String(form.get('password')), role: selectedRole, redirect: false });
-    if (result?.error) {
-      setNotice(t('demoAccounts'));
-      return;
-    }
-    setNotice(t('signedIn'));
+    const preview = previewUserFor(selectedRole);
+    window.localStorage.setItem(PREVIEW_ROLE_KEY, selectedRole);
+    setPreviewUser(preview);
+    window.dispatchEvent(new Event('udyog-mitra-preview-change'));
+    setNotice(previewText('active'));
     router.push(selectedRole === 'officer' ? '/officer/dashboard' : selectedRole === 'nodal' ? '/nodal/dashboard' : selectedRole === 'admin' ? '/admin' : '/dashboard');
   }
 
@@ -255,6 +278,20 @@ export function WorkspacePage({ segments }: { segments: string[] }) {
       input.value = '';
       return;
     }
+    if (!session && previewUser) {
+      const previewDocument: LocalDocument = {
+        reference: `PREVIEW-DOC-${Date.now()}`, name: file.name, size: file.size, status: 'NEEDS_REVIEW',
+        type: input.dataset.documentType || 'Supporting document', source: 'manual', simulated: true,
+      };
+      setDocuments((current) => {
+        const next = [previewDocument, ...current];
+        saveValue('udyog-mitra-documents', next);
+        return next;
+      });
+      setNotice(previewText('localSave'));
+      input.value = '';
+      return;
+    }
     const form = new FormData();
     form.append('file', file);
     form.append('documentType', input.dataset.documentType || 'Supporting document');
@@ -281,9 +318,11 @@ export function WorkspacePage({ segments }: { segments: string[] }) {
     event.currentTarget.reset();
   }
 
-  const role = session?.user.role;
+  const role = session?.user.role ?? previewUser?.role;
+  const userEmail = session?.user.email ?? previewUser?.email;
+  const previewMode = !session && Boolean(previewUser);
   const shownApplications = applicationsList.filter((app) => {
-    if (role === 'applicant' && app.ownerEmail !== session?.user.email) return false;
+    if (role === 'applicant' && app.ownerEmail !== userEmail) return false;
     const searchable = `${app.id} ${app.business} ${app.department} ${app.district} ${app.status}`.toLowerCase();
     const matchesSearch = searchable.includes(query.toLowerCase());
     const matchesFilter = filter === 'All' || app.status.toLowerCase().includes(filter.toLowerCase());
@@ -293,34 +332,35 @@ export function WorkspacePage({ segments }: { segments: string[] }) {
   const title = pageTitle(route, common, t);
   const requiresSession = ['apply', 'applications', 'track', 'dashboard', 'officer/dashboard', 'nodal/dashboard', 'admin', 'documents', 'inspections', 'grievance', 'notifications', 'profile'].includes(route)
     || route.startsWith('applications/') || route.startsWith('officer/applications/') || route.startsWith('journey/');
-  const roleAllowed = route.startsWith('officer/') ? ['officer', 'nodal', 'admin'].includes(role ?? '')
+  const roleAllowed = previewMode ? true : route.startsWith('officer/') ? ['officer', 'nodal', 'admin'].includes(role ?? '')
     : route.startsWith('nodal/') ? ['nodal', 'admin'].includes(role ?? '')
       : route === 'admin' ? role === 'admin'
         : ['dashboard', 'apply', 'documents', 'profile', 'grievance'].includes(route) ? role === 'applicant'
           : true;
 
-  if (requiresSession && sessionStatus === 'loading') return <main id="main-content" className="workspace-page"><div className="workspace-wrap narrow"><div className="panel empty-state">{t('signIn')}…</div></div></main>;
-  if (requiresSession && sessionStatus !== 'authenticated') return <main id="main-content" className="workspace-page"><div className="workspace-wrap narrow"><WorkspaceHeading title={t('signIn')} intro={t('legal')} /><Link className="button-primary" hrefLocalized="/login">{common('login')} <ArrowRight size={16} /></Link></div></main>;
+  if (requiresSession && !previewUserLoaded && sessionStatus !== 'authenticated') return <main id="main-content" className="workspace-page"><div className="workspace-wrap narrow"><div className="panel empty-state">{t('signIn')}…</div></div></main>;
+  if (requiresSession && sessionStatus === 'loading' && !previewUser) return <main id="main-content" className="workspace-page"><div className="workspace-wrap narrow"><div className="panel empty-state">{t('signIn')}…</div></div></main>;
+  if (requiresSession && sessionStatus !== 'authenticated' && !previewUser) return <main id="main-content" className="workspace-page"><div className="workspace-wrap narrow"><WorkspaceHeading title={t('signIn')} intro={t('legal')} /><Link className="button-primary" hrefLocalized="/login">{common('login')} <ArrowRight size={16} /></Link></div></main>;
   if (requiresSession && !roleAllowed) return <main id="main-content" className="workspace-page"><div className="workspace-wrap narrow"><WorkspaceHeading title={t('demoAccounts')} intro={t('legal')} /><Link className="button-primary" hrefLocalized="/login">{t('changeRole')} <ArrowRight size={16} /></Link></div></main>;
 
   if (route === 'know-your-approvals' || route.startsWith('checklist/')) return <main id="main-content" className="workspace-page"><div className="workspace-wrap"><WorkspaceHeading title={t('titleChecklist')} intro={t('introChecklist')} /><Wizard step={step} setStep={setStep} profile={profile} updateProfile={updateProfile} entityType={entityType} setEntityType={setEntityType} verifiedDocumentCount={documents.filter((document) => document.status === 'VERIFIED').length} documentCount={documents.length} checklistReady={checklistReady} onGenerate={() => { setChecklistReady(true); saveValue('udyog-mitra-profile', profile); saveValue('udyog-mitra-entity-type', entityType); }} checklist={checklist} locale={locale} startApplication={startApplication} t={t} /></div></main>;
 
-  if (route.startsWith('journey/')) return <main id="main-content" className="workspace-page"><div className="workspace-wrap"><WorkspaceHeading title={timelineText('title')} intro={timelineText('intro')} /><JourneyTimeline applicationId={segments[1]} approvalIds={[]} profile={profile} /></div></main>;
+  if (route.startsWith('journey/')) return <main id="main-content" className="workspace-page"><div className="workspace-wrap"><WorkspaceHeading title={timelineText('title')} intro={timelineText('intro')} /><JourneyTimeline applicationId={previewMode ? undefined : segments[1]} approvalIds={previewMode ? checklist.map((approval) => approval.id) : []} profile={profile} /></div></main>;
 
   if (route === 'whatsapp') return <WhatsAppGuide />;
 
   if (route === 'register') return <main id="main-content" className="workspace-page"><div className="workspace-wrap narrow"><WorkspaceHeading title={common('register')} intro={t('mockOtp')} /><form className="panel form-grid" onSubmit={registerAccount}><label>{t('fullName')}<input name="name" autoComplete="name" minLength={2} required /></label><label>{t('email')}<input type="email" name="email" autoComplete="email" required /></label><label>{t('mobile')}<input name="mobile" inputMode="numeric" autoComplete="tel-national" pattern="[6-9][0-9]{9}" required /></label><label>{t('otp')}<input name="otp" inputMode="numeric" defaultValue="123456" pattern="[0-9]{6}" required /></label><label>{t('password')}<input type="password" name="password" minLength={8} autoComplete="new-password" required /></label><p className="muted small">{t('passwordHint')} {t('mockOtp')}</p><button className="button-primary" type="submit">{t('createAccount')} <ArrowRight size={16} /></button>{notice && <p role="status" className="notice">{notice}</p>}</form></div></main>;
 
-  if (route === 'login') return <main id="main-content" className="workspace-page"><div className="workspace-wrap narrow"><WorkspaceHeading title={t('signIn')} intro={t('demoAccounts')} /><form className="panel form-grid" onSubmit={signIn}><label>{t('role')}<select name="role" value={loginRole} onChange={(event) => { const role = event.target.value as DemoUser['role']; setLoginRole(role); setLoginEmail(roleEmails[role]); }}><option value="applicant">{t('applicant')}</option><option value="officer">{t('officer')}</option><option value="nodal">{t('nodal')}</option><option value="admin">{t('admin')}</option></select></label><label>{t('email')}<input type="email" name="email" value={loginEmail} onChange={(event) => setLoginEmail(event.target.value)} required /></label><label>{t('password')}<input type="password" name="password" defaultValue="demo123" required /></label><button className="button-primary" type="submit">{t('continue')} <ArrowRight size={16} /></button>{notice && <p role="status" className="notice">{notice}</p>}</form><p className="muted small">{t('legal')}</p></div></main>;
+  if (route === 'login') return <main id="main-content" className="workspace-page"><div className="workspace-wrap narrow"><WorkspaceHeading title={t('signIn')} intro={previewText('loginIntro')} /><form className="panel form-grid" onSubmit={signIn}><label>{t('role')}<select name="role" value={loginRole} onChange={(event) => setLoginRole(event.target.value as DemoUser['role'])}><option value="applicant">{t('applicant')}</option><option value="officer">{t('officer')}</option><option value="nodal">{t('nodal')}</option><option value="admin">{t('admin')}</option></select></label><button className="button-primary" type="submit">{t('continue')} <ArrowRight size={16} /></button>{notice && <p role="status" className="notice">{notice}</p>}</form><p className="muted small">{t('legal')}</p></div></main>;
 
   if (route === 'apply') return <main id="main-content" className="workspace-page"><div className="workspace-wrap"><WorkspaceHeading title={t('submitApplication')} intro={t('legal')} /><ApplicationForm onSubmit={saveAndSubmitApplication} errors={formErrors} documents={documents} onUpload={uploadDocument} organizationType={entityType} submitting={applicationSubmitting} t={t} /><p aria-live="polite" className="notice">{notice}</p></div></main>;
 
   if (route === 'applications' || route === 'track' || route === 'dashboard' || route === 'officer/dashboard' || route === 'nodal/dashboard' || route === 'admin') {
-    const isOfficer = ['officer', 'nodal', 'admin'].includes(role ?? '');
+    const isOfficer = Boolean(session && ['officer', 'nodal', 'admin'].includes(role ?? ''));
     return <main id="main-content" className="workspace-page"><div className="workspace-wrap"><WorkspaceHeading title={title} intro={route === 'dashboard' ? t('nextAction') : t('notOfficial')} />
-      {route === 'dashboard' && <ApplicantOverview applications={applicationsList.filter((application) => application.ownerEmail === session?.user.email)} t={t} />}
+      {route === 'dashboard' && <ApplicantOverview applications={applicationsList.filter((application) => application.ownerEmail === userEmail)} t={t} />}
       {(route === 'officer/dashboard' || route === 'nodal/dashboard' || route === 'admin') && <AnalyticsOverview t={t} />}
-      {(route === 'nodal/dashboard' || route === 'admin') && <ManualVerificationQueue />}
+      {session && (route === 'nodal/dashboard' || route === 'admin') && <ManualVerificationQueue />}
       <div className="toolbar"><label className="search-field"><Search size={17} /><input aria-label={t('search')} placeholder={t('search')} value={query} onChange={(event) => { setQuery(event.target.value); setApplicationPage(1); }} /></label><label>{t('filter')} <select value={filter} onChange={(event) => { setFilter(event.target.value); setApplicationPage(1); }}><option value="All">{t('all')}</option><option>Submitted</option><option>Under Scrutiny</option><option>Query Raised</option><option>Approved</option><option>Rejected</option></select></label><Link className="button-primary" hrefLocalized="/know-your-approvals">{t('newApplication')} <ArrowRight size={15} /></Link></div>
       {applicationsLoading && <p className="muted" role="status">{applicationText('loadingApplications')}</p>}
       {applicationsError && <div className="insight" role="alert"><CircleAlert /><span>{applicationText('applicationsUnavailable')}</span><button className="button-quiet" onClick={() => setApplicationRefresh((value) => value + 1)}>{timelineText('retry')}</button></div>}
@@ -337,7 +377,7 @@ export function WorkspacePage({ segments }: { segments: string[] }) {
     return <main id="main-content" className="workspace-page"><div className="workspace-wrap"><WorkspaceHeading title={app?.id ?? t('applications')} intro={`${app?.business ?? ''} · ${app?.status ?? ''}`} /><div className="two-column"><section className="panel"><h2>{t('stageTimeline')}</h2><ol className="status-timeline">{['Draft', 'Submitted', 'Under Scrutiny', 'Query Raised', 'Approved'].map((status) => <li key={status} data-active={status === app?.status}>{status}</li>)}</ol><p>{t('risk')}: {app?.risk}/100</p><p>{t('due')}: {app?.dueIn} days</p><Link hrefLocalized={`/journey/${app.id}`} className="button-quiet">{timelineText('viewJourney')} <ArrowRight size={15} /></Link></section><section className="panel"><h2>{t('documents')}</h2>{app?.status === 'Query Raised' ? <form className="form-grid" onSubmit={respondToQuery}><p>{app.query}</p><label>{t('response')}<textarea name="response" required rows={4} /></label><button className="button-primary">{t('send')}</button></form> : <><p>{t('legal')}</p><Link hrefLocalized="/apply" className="button-quiet">{t('open')}</Link></>}</section></div></div></main>;
   }
 
-  if (route === 'documents') return <main id="main-content" className="workspace-page"><div className="workspace-wrap"><WorkspaceHeading title={t('documents')} intro={documentText('uploadLimits')} /><DocumentPanel documents={documents} onUpload={uploadDocument} onImported={(document) => setDocuments((current) => [mapApiDocument(document), ...current])} t={t} /></div></main>;
+  if (route === 'documents') return <main id="main-content" className="workspace-page"><div className="workspace-wrap"><WorkspaceHeading title={t('documents')} intro={documentText('uploadLimits')} /><DocumentPanel documents={documents} onUpload={uploadDocument} previewMode={previewMode} onImported={(document) => setDocuments((current) => { const next = [mapApiDocument(document), ...current]; if (previewMode) saveValue('udyog-mitra-documents', next); return next; })} t={t} /></div></main>;
 
   if (route === 'incentives' || route.startsWith('schemes')) return <main id="main-content" className="workspace-page"><div className="workspace-wrap"><WorkspaceHeading title={t('schemes')} intro={t('notOfficial')} /><div className="record-grid">{schemes.map((scheme) => <article className="panel scheme-card" key={scheme.id}><span className="section-kicker">{t('notOfficial')}</span><h2>{scheme.name[locale]}</h2><p>{scheme.description[locale]}</p><strong>{t('benefit')}: {scheme.benefit}</strong><p className="muted">{t('eligible')}: {scheme.tags.join(', ')}</p><button className="button-quiet" onClick={() => setNotice(t('schemeClaimed'))}>{t('applyScheme')} <ArrowRight size={15} /></button></article>)}</div>{notice && <p role="status" className="notice">{notice}</p>}</div></main>;
 
@@ -423,8 +463,9 @@ function RegistrationPathway({ entityType, profile, registrationCount, verifiedD
   return <section className="panel registration-pathway"><div className="timeline-heading"><div><span className="section-kicker">{t('title')}</span><h2>{entity.name[locale]}</h2></div><span className="estimate-pill">{estimate.minimumDays}–{estimate.maximumDays} {t('days')}</span></div><p>{entity.summary[locale]}</p><p><strong>{t('requiredDocuments')}:</strong> {entity.documents[0][locale]}</p><p><strong>{t('authority')}:</strong> {entity.authority} · <a href={entity.officialUrl} target="_blank" rel="noreferrer">{t('officialPortal')}</a></p><p className="muted small">{t('estimateNotice')} {t(estimate.confidence === 'medium' ? 'mediumConfidence' : 'lowConfidence')}</p><details><summary>{t('catalog')}</summary>{groups.map((group) => <details key={group}><summary>{t(`${group}Group`)}</summary><div className="timeline-groups">{registrationCatalog.filter((entry) => entry.group === group).map((entry) => <article className="approval-row" key={entry.id}><div className="approval-main"><h4>{entry.name[locale]}</h4><p>{entry.summary[locale]}</p><small>{t('requiredDocuments')}: {entry.documents[0][locale]}</small></div><a href={entry.officialUrl} target="_blank" rel="noreferrer">{t('officialPortal')} ↗</a></article>)}</div></details>)}</details></section>;
 }
 
-function DocumentPanel({ documents, onUpload, onImported, t }: {
+function DocumentPanel({ documents, onUpload, previewMode, onImported, t }: {
   documents: LocalDocument[]; onUpload: (event: FormEvent<HTMLInputElement>) => void;
+  previewMode: boolean;
   onImported: (document: ApiDocument) => void; t: ReturnType<typeof useTranslations>;
 }) {
   const dt = useTranslations('Documents');
@@ -458,6 +499,12 @@ function DocumentPanel({ documents, onUpload, onImported, t }: {
   async function connectDemo() {
     setBusy(true);
     setError(false);
+    if (previewMode) {
+      setConnected(true);
+      setRemoteDocuments([{ reference: 'PREVIEW-DL-PAN', documentType: 'pan', displayName: `${dt('pan')} (sample)`, issuer: 'Sample issuer', expiresAt: null, maskedIdentifier: 'XXXX-XXXX', simulated: true }]);
+      setBusy(false);
+      return;
+    }
     try {
       const response = await fetch('/api/documents/digilocker', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'grant' }) });
       if (!response.ok) throw new Error('Consent failed');
@@ -469,6 +516,12 @@ function DocumentPanel({ documents, onUpload, onImported, t }: {
   async function revokeDemo() {
     setBusy(true);
     setError(false);
+    if (previewMode) {
+      setConnected(false);
+      setRemoteDocuments([]);
+      setBusy(false);
+      return;
+    }
     try {
       const response = await fetch('/api/documents/digilocker', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'revoke' }) });
       if (!response.ok) throw new Error('Consent revocation failed');
@@ -481,6 +534,17 @@ function DocumentPanel({ documents, onUpload, onImported, t }: {
   async function importDemoDocument(reference: string) {
     setBusy(true);
     setError(false);
+    if (previewMode) {
+      const sample = remoteDocuments.find((document) => document.reference === reference);
+      if (sample) onImported({
+        reference: `PREVIEW-${reference}-${Date.now()}`, documentType: sample.documentType, displayName: sample.displayName,
+        status: 'SIMULATED_SOURCE_MATCH_NEEDS_REVIEW', source: 'digilocker', simulated: true, sourceMatch: true,
+        sourceVerified: false, mimeType: 'application/pdf', byteSize: 1024,
+      });
+      setRemoteDocuments((current) => current.filter((document) => document.reference !== reference));
+      setBusy(false);
+      return;
+    }
     try {
       const response = await fetch('/api/documents/digilocker', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'import', reference }) });
       const result = await response.json() as { data?: ApiDocument };

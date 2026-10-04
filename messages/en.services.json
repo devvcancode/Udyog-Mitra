@@ -40,6 +40,13 @@
   "PWA": {
     "install": "Install app"
   },
+  "Preview": {
+    "loginIntro": "Choose a role to open the local demo. No account service is required.",
+    "active": "Server sign-in is unavailable. Opening the local demo preview.",
+    "banner": "Local demo preview · changes stay in this browser and do not update government records.",
+    "localSave": "Saved in this browser's demo data only.",
+    "exit": "Exit preview"
+  },
   "Registration": {
     "title": "Business setup and registrations",
     "entityType": "Legal business structure",
